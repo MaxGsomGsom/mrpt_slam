@@ -217,6 +217,7 @@ void PFslamWrapper::publishMapPose()
     // publish map
     nav_msgs::OccupancyGrid _msg;
     mrpt_bridge::convert(*metric_map_->m_gridMaps[0], _msg);
+    _msg.header.frame_id = global_frame_id;
     pub_map_.publish(_msg);
     pub_metadata_.publish(_msg.info);
   }
@@ -277,7 +278,7 @@ void PFslamWrapper::vizBeacons()
   visualization_msgs::MarkerArray ma;
   visualization_msgs::Marker marker;
 
-  marker.header.frame_id = "/map";
+  marker.header.frame_id = global_frame_id;
 
   marker.id = 0;
   marker.type = visualization_msgs::Marker::SPHERE;
@@ -386,6 +387,7 @@ bool PFslamWrapper::rawlogPlay()
 
           // if we have new map for current sensor update it
           mrpt_bridge::convert(*metric_map_->m_gridMaps[0], _msg);
+          _msg.header.frame_id = global_frame_id;
           pub_map_.publish(_msg);
           pub_metadata_.publish(_msg.info);
         }

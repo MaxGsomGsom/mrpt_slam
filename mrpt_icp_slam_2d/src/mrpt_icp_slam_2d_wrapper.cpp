@@ -355,6 +355,7 @@ void ICPslamWrapper::publishMapPose()
     nav_msgs::OccupancyGrid _msg;
     // if we have new map for current sensor update it
     mrpt_bridge::convert(*metric_map_->m_gridMaps[0], _msg);
+    _msg.header.frame_id = global_frame_id;
     pub_map_.publish(_msg);
     pub_metadata_.publish(_msg.info);
   }
@@ -462,6 +463,7 @@ bool ICPslamWrapper::rawlogPlay()
 
           // if we have new map for current sensor update it
           mrpt_bridge::convert(*metric_map_->m_gridMaps[0], _msg);
+          _msg.header.frame_id = global_frame_id;
           pub_map_.publish(_msg);
           pub_metadata_.publish(_msg.info);
         }

@@ -320,7 +320,7 @@ void EKFslamWrapper::viz_dataAssociation()
   visualization_msgs::MarkerArray ma;
   visualization_msgs::Marker line_strip;
 
-  line_strip.header.frame_id = "/map";
+  line_strip.header.frame_id = global_frame_id;
   line_strip.header.stamp = ros::Time::now();
 
   line_strip.id = 0;
@@ -370,7 +370,7 @@ void EKFslamWrapper::viz_state()
 {
   visualization_msgs::MarkerArray ma;
   visualization_msgs::Marker marker;
-  marker.header.frame_id = "/map";
+  marker.header.frame_id = global_frame_id;
   marker.id = 0;
   marker.type = visualization_msgs::Marker::SPHERE;
   marker.action = visualization_msgs::Marker::ADD;
