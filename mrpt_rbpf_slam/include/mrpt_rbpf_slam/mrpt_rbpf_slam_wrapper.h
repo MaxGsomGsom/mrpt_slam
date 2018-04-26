@@ -10,6 +10,7 @@
 #include <iostream>  // std::cout
 #include <fstream>   // std::ifstream
 #include <string>
+#include <queue>
 #include "mrpt_rbpf_slam/mrpt_rbpf_slam.h"
 
 // add ros libraries
@@ -17,6 +18,7 @@
 #include <ros/package.h>
 #include <tf/transform_listener.h>
 #include <tf/transform_broadcaster.h>
+#include <tf_conversions/tf_eigen.h>
 // add ros msgs
 #include <nav_msgs/OccupancyGrid.h>
 #include "nav_msgs/MapMetaData.h"
@@ -30,6 +32,7 @@
 #include <visualization_msgs/Marker.h>
 // mrpt msgs
 #include "mrpt_msgs/ObservationRangeBeacon.h"
+#include "mrpt_rbpf_slam/ObservationWithTransform.h"
 // mrpt bridge libs
 #include <mrpt_bridge/pose.h>
 #include <mrpt_bridge/map.h>
@@ -114,6 +117,35 @@ public:
   void laserCallback(const sensor_msgs::LaserScan& _msg);
 
   /**
+  * @brief callback function for the observations from other robots
+  *
+  * Given the laser scans or range only observation with odometry,
+  * create the pair of action and observation,
+  * implement one SLAM update,
+  * publish map and pose.
+  *
+  * @param _msg ObservationWithTransform message
+  */
+  void multirobotCallback(const mrpt_rbpf_slam::ObservationWithTransform& _msg);
+  
+  /**
+  * @brief Convert ObservationWithTransform to CObservation
+  *
+  * @param _msg ObservationWithTransform message
+  * @param _stamp timestamp of odometry
+  */
+  CObservation::Ptr msgToObservation(const mrpt_rbpf_slam::ObservationWithTransform& _msg, ros::Time _stamp);
+  
+  /**
+  * @brief publish observations to other robots
+  *
+  * @param scan observation
+  * @param beacon observation
+  * @param _frame_id frame of sensor
+  */
+  void publishObservations(const sensor_msgs::LaserScan* scan, const mrpt_msgs::ObservationRangeBeacon* beacon);
+  
+  /**
    * @brief wait for transfor between odometry frame and the robot frame
    *
    * @param des position of the robot with respect to odometry frame
@@ -136,7 +168,7 @@ public:
   * @param _msg_header timestamp of the observation
   */
   void odometryForCallback(CObservationOdometry::Ptr& _odometry, const std_msgs::Header& _msg_header);
-
+  
   /**
   * @brief  update the pose of the sensor with respect to the robot
   *
@@ -159,21 +191,27 @@ private:
   ros::NodeHandle n_;        ///< Node Handle
   double rawlog_play_delay;  ///< delay of replay from rawlog file
   bool rawlog_play_;         ///< true if rawlog file exists
+  bool run_multi_robot;      ///< multi-robot mode
+  int robots_count;          ///< number of robots
+  int obs_batch = 5;         ///< number of observation from other robots to add to current action
 
   std::string rawlog_filename;  ///< name of rawlog file
   std::string ini_filename;     ///< name of ini file
   std::string global_frame_id;  ///< /map frame
   std::string odom_frame_id;    ///< /odom frame
   std::string base_frame_id;    ///< robot frame
+  std::string base_ns;          ///< constant part of namespace for multi-robot
 
   // Sensor source
   std::string sensor_source;  ///< 2D laser scans
+  std::string robots_source;  ///< observations and transforms
 
   std::map<std::string, mrpt::poses::CPose3D> laser_poses_;   ///< laser scan poses with respect to the map
   std::map<std::string, mrpt::poses::CPose3D> beacon_poses_;  ///< beacon poses with respect to the map
 
   // Subscribers
   std::vector<ros::Subscriber> sensorSub_;  ///< list of sensors topics
+  std::vector<ros::Subscriber> robotsSubs;  ///< list of robots topics
 
   // read rawlog file
   std::vector<std::pair<CActionCollection, CSensoryFrame>> data;  ///< vector of pairs of actions and obsrvations from
@@ -182,13 +220,16 @@ private:
   std::vector<mrpt::opengl::CEllipsoid::Ptr> viz_beacons;
 
   ros::Publisher pub_map_, pub_metadata_, pub_Particles_, pub_Particles_Beacons_,
-      beacon_viz_pub_;  ///<publishers for map and pose particles
+      beacon_viz_pub_, pub_observations;  ///<publishers for map and pose particles
 
   tf::TransformListener listenerTF_;         ///<transform listener
   tf::TransformBroadcaster tf_broadcaster_;  ///<transform broadcaster
 
   CTicTac tictac;  ///<timer for SLAM performance evaluation
   float t_exec;    ///<the time which take one SLAM update execution
+  
+  std::queue<mrpt_rbpf_slam::ObservationWithTransform> obs_queue;  ///< observations of other robots
+  boost::mutex obs_mutex;
 };
 
 #endif /*MRPT_RBPF_SLAM_WRAPPER_H*/

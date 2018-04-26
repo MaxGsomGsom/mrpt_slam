@@ -39,6 +39,18 @@ void PFslamWrapper::get_param()
 
   n_.param<std::string>("sensor_source", sensor_source, "scan");
   ROS_INFO("sensor_source: %s", sensor_source.c_str());
+  
+  n_.param<bool>("run_multi_robot", run_multi_robot, false);
+  ROS_INFO("run_multi_robot: %d", run_multi_robot);
+  
+  n_.param<std::string>("robots_source", robots_source, "observations");
+  ROS_INFO("robots_source: %s", robots_source.c_str());
+  
+  n_.param<std::string>("base_ns", base_ns, "robot");
+  ROS_INFO("base_ns: %s", base_ns.c_str());
+  
+  n_.param<int>("robots_count", robots_count, 2);
+  ROS_INFO("robots_count: %d", robots_count);
 }
 
 void PFslamWrapper::init()
@@ -66,7 +78,7 @@ void PFslamWrapper::init()
   pub_Particles_ = n_.advertise<geometry_msgs::PoseArray>("particlecloud", 1, true);
   // ro particles poses
   pub_Particles_Beacons_ = n_.advertise<geometry_msgs::PoseArray>("particlecloud_beacons", 1, true);
-  beacon_viz_pub_ = n_.advertise<visualization_msgs::MarkerArray>("/beacons_viz", 1);
+  beacon_viz_pub_ = n_.advertise<visualization_msgs::MarkerArray>("beacons_viz", 1);
 
   // read sensor topics
   std::vector<std::string> lstSources;
@@ -86,6 +98,22 @@ void PFslamWrapper::init()
     {
       sensorSub_[i] = n_.subscribe(lstSources[i], 1, &PFslamWrapper::callbackBeacon, this);
     }
+  }
+  if (run_multi_robot) {
+      //advertize own observations
+      std::string own_obs = ros::names::resolve(robots_source);
+      pub_observations = n_.advertise<mrpt_rbpf_slam::ObservationWithTransform>(own_obs, 1, true);
+      
+      //subscribe to others observations
+      robotsSubs.resize(robots_count);
+      for (int i = 0; i < robots_count; i++)
+      {
+        std::string other_obs = ros::names::resolve("/" + base_ns + std::to_string(i) + "/" + robots_source);
+        if (other_obs != own_obs)
+        {
+          robotsSubs[i] = n_.subscribe(other_obs, 1, &PFslamWrapper::multirobotCallback, this);
+        }
+      }
   }
 
   // init slam
@@ -157,17 +185,107 @@ void PFslamWrapper::laserCallback(const sensor_msgs::LaserScan& _msg)
 
     CObservation::Ptr obs = CObservation::Ptr(laser);
     sf->insert(obs);
+    
+    //add observations from other robots and publish own
+    if (run_multi_robot) {
+        publishObservations(&_msg, nullptr);
+        for (int i = 0; i < obs_batch && !obs_queue.empty(); i++) {
+            boost::mutex::scoped_lock(obs_mutex);
+            CObservation::Ptr mr_obs = msgToObservation(obs_queue.front(), _msg.header.stamp); //use same timestamp as odometry
+            if (!mr_obs) break;
+            sf->insert(mr_obs);
+            obs_queue.pop();
+        }
+    }
+    
     observation(sf, odometry);
     timeLastUpdate_ = sf->getObservationByIndex(0)->timestamp;
 
     tictac.Tic();
     mapBuilder->processActionObservation(*action, *sf);
     t_exec = tictac.Tac();
-    ROS_INFO("Map building executed in %.03fms", 1000.0f * t_exec);
+    ROS_DEBUG("Map building executed in %.03fms", 1000.0f * t_exec);
     publishMapPose();
     run3Dwindow();
     publishTF();
   }
+}
+
+void PFslamWrapper::multirobotCallback(const mrpt_rbpf_slam::ObservationWithTransform& _msg)
+{
+  boost::mutex::scoped_lock(obs_mutex);
+  obs_queue.push(_msg);
+
+  ROS_DEBUG("Multi-robot observation added");
+}
+
+CObservation::Ptr PFslamWrapper::msgToObservation(const mrpt_rbpf_slam::ObservationWithTransform& _msg, ros::Time _stamp) {
+#if MRPT_VERSION >= 0x130
+  using namespace mrpt::maps;
+  using namespace mrpt::obs;
+#else
+  using namespace mrpt::slam;
+#endif
+  //transform to pose
+  geometry_msgs::PoseStamped global_pose;
+  global_pose.header = _msg.transform.header;
+  global_pose.pose.orientation = _msg.transform.transform.rotation;
+  global_pose.pose.position.x = _msg.transform.transform.translation.x;
+  global_pose.pose.position.y = _msg.transform.transform.translation.y;
+  global_pose.pose.position.z = _msg.transform.transform.translation.z;
+  //transform to robot base frame
+  geometry_msgs::PoseStamped pose;
+  try
+  {
+    listenerTF_.transformPose(base_frame_id, _stamp, global_pose, global_frame_id, pose);
+  }
+  catch (tf::TransformException ex)
+  {
+    if (!mapBuilder->mapPDF.getCurrentMostLikelyMetricMap()->m_gridMaps.size())
+      ROS_WARN("%s", ex.what());
+    return nullptr;
+  }
+  
+  //convert tf transform to mrpt pose
+  mrpt::poses::CPose3D sensor_pose;
+  mrpt_bridge::convert(pose.pose, sensor_pose);
+  CObservation::Ptr obs;
+      
+  if (_msg.scan.ranges.size() > 0) {
+    CObservation2DRangeScan::Ptr laser = CObservation2DRangeScan::Create();
+    mrpt_bridge::convert(_msg.scan, sensor_pose, *laser);
+    obs = CObservation::Ptr(laser);
+  }
+  else if (_msg.beacon.sensed_data.size() > 0) {
+    CObservationBeaconRanges::Ptr beacon = CObservationBeaconRanges::Create();
+    mrpt_bridge::convert(_msg.beacon, sensor_pose, *beacon);
+    obs = CObservation::Ptr(beacon);
+  }
+  
+  return obs;
+}
+
+
+void PFslamWrapper::publishObservations(const sensor_msgs::LaserScan* scan, const mrpt_msgs::ObservationRangeBeacon* beacon) {
+  tf::StampedTransform transform;
+  try
+  {
+    ros::Time stamp = scan ? scan->header.stamp : beacon->header.stamp;
+    std::string frame = scan ? scan->header.frame_id : beacon->header.frame_id;
+    listenerTF_.lookupTransform(global_frame_id, frame, stamp, transform); //use same timestamp as sensor message
+    mrpt_rbpf_slam::ObservationWithTransform msg;
+    tf::transformStampedTFToMsg(transform, msg.transform);
+    if (scan) msg.scan = *scan;
+    else if (beacon) msg.beacon = *beacon;
+    
+    pub_observations.publish(msg);
+  }
+  catch (tf::TransformException ex)
+  {
+    if (!mapBuilder->mapPDF.getCurrentMostLikelyMetricMap()->m_gridMaps.size())
+      ROS_WARN("%s", ex.what());
+  }
+
 }
 
 void PFslamWrapper::callbackBeacon(const mrpt_msgs::ObservationRangeBeacon& _msg)
@@ -194,13 +312,26 @@ void PFslamWrapper::callbackBeacon(const mrpt_msgs::ObservationRangeBeacon& _msg
 
     CObservation::Ptr obs = CObservation::Ptr(beacon);
     sf->insert(obs);
+    
+    //add observations from other robots and publish own
+    if (run_multi_robot) {
+        publishObservations(nullptr, &_msg);
+        for (int i = 0; i < obs_batch && !obs_queue.empty(); i++) {
+            boost::mutex::scoped_lock(obs_mutex);
+            CObservation::Ptr mr_obs = msgToObservation(obs_queue.front(), _msg.header.stamp); //use same timestamp as odometry
+            if (!mr_obs) break;
+            sf->insert(mr_obs);
+            obs_queue.pop();
+        }
+    }
+    
     observation(sf, odometry);
     timeLastUpdate_ = sf->getObservationByIndex(0)->timestamp;
 
     tictac.Tic();
     mapBuilder->processActionObservation(*action, *sf);
     t_exec = tictac.Tac();
-    ROS_INFO("Map building executed in %.03fms", 1000.0f * t_exec);
+    ROS_DEBUG("Map building executed in %.03fms", 1000.0f * t_exec);
 
     publishMapPose();
     run3Dwindow();

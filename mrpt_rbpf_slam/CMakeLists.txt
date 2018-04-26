@@ -10,10 +10,12 @@ find_package(catkin REQUIRED COMPONENTS
   std_msgs
   nav_msgs
   sensor_msgs
+  geometry_msgs
   visualization_msgs
   mrpt_bridge
   dynamic_reconfigure
-  roslaunch)
+  roslaunch
+  message_generation)
 
 #find mrpt packages
 find_package(MRPT 1.5 REQUIRED)
@@ -45,10 +47,20 @@ INCLUDE_DIRECTORIES(
    ${CMAKE_CURRENT_BINARY_DIR}
 )
 
+add_message_files(
+  FILES
+  ObservationWithTransform.msg
+)
+
+generate_messages(DEPENDENCIES 
+  mrpt_msgs
+  sensor_msgs
+  geometry_msgs
+)
 
 catkin_package(
 	CATKIN_DEPENDS
-	nav_msgs sensor_msgs std_msgs
+	nav_msgs sensor_msgs std_msgs geometry_msgs message_runtime 
 )
 
 ###########
