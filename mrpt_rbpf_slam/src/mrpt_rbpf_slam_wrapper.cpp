@@ -111,7 +111,7 @@ void PFslamWrapper::init()
         std::string other_obs = ros::names::resolve("/" + base_ns + std::to_string(i) + "/" + robots_source);
         if (other_obs != own_obs)
         {
-          robotsSubs[i] = n_.subscribe(other_obs, 1, &PFslamWrapper::multirobotCallback, this);
+          robotsSubs[i] = n_.subscribe(other_obs, 1000, &PFslamWrapper::multirobotCallback, this);
         }
       }
   }
@@ -188,11 +188,10 @@ void PFslamWrapper::laserCallback(const sensor_msgs::LaserScan& _msg)
     
     //add observations from other robots and publish own
     if (run_multi_robot) {
-        publishObservations(&_msg, nullptr);
         for (int i = 0; i < obs_batch && !obs_queue.empty(); i++) {
             boost::mutex::scoped_lock(obs_mutex);
             CObservation::Ptr mr_obs = msgToObservation(obs_queue.front(), _msg.header.stamp); //use same timestamp as odometry
-            if (!mr_obs) break;
+            if (mr_obs == nullptr) break;
             sf->insert(mr_obs);
             obs_queue.pop();
         }
@@ -208,6 +207,9 @@ void PFslamWrapper::laserCallback(const sensor_msgs::LaserScan& _msg)
     publishMapPose();
     run3Dwindow();
     publishTF();
+    
+    if (run_multi_robot)
+        publishObservations(&_msg, nullptr);
   }
 }
 
@@ -219,7 +221,7 @@ void PFslamWrapper::multirobotCallback(const mrpt_rbpf_slam::ObservationWithTran
   ROS_DEBUG("Multi-robot observation added");
 }
 
-CObservation::Ptr PFslamWrapper::msgToObservation(const mrpt_rbpf_slam::ObservationWithTransform& _msg, ros::Time _stamp) {
+CObservation::Ptr PFslamWrapper::msgToObservation(const mrpt_rbpf_slam::ObservationWithTransform& _msg, const ros::Time& _stamp) {
 #if MRPT_VERSION >= 0x130
   using namespace mrpt::maps;
   using namespace mrpt::obs;
@@ -228,7 +230,8 @@ CObservation::Ptr PFslamWrapper::msgToObservation(const mrpt_rbpf_slam::Observat
 #endif
   //transform to pose
   geometry_msgs::PoseStamped global_pose;
-  global_pose.header = _msg.transform.header;
+  global_pose.header.stamp = _stamp;
+  global_pose.header.frame_id = global_frame_id;
   global_pose.pose.orientation = _msg.transform.transform.rotation;
   global_pose.pose.position.x = _msg.transform.transform.translation.x;
   global_pose.pose.position.y = _msg.transform.transform.translation.y;
@@ -241,8 +244,7 @@ CObservation::Ptr PFslamWrapper::msgToObservation(const mrpt_rbpf_slam::Observat
   }
   catch (tf::TransformException ex)
   {
-    if (!mapBuilder->mapPDF.getCurrentMostLikelyMetricMap()->m_gridMaps.size())
-      ROS_WARN("%s", ex.what());
+    ROS_WARN("%s", ex.what());
     return nullptr;
   }
   
@@ -282,8 +284,7 @@ void PFslamWrapper::publishObservations(const sensor_msgs::LaserScan* scan, cons
   }
   catch (tf::TransformException ex)
   {
-    if (!mapBuilder->mapPDF.getCurrentMostLikelyMetricMap()->m_gridMaps.size())
-      ROS_WARN("%s", ex.what());
+    ROS_WARN("%s", ex.what());
   }
 
 }
@@ -315,11 +316,10 @@ void PFslamWrapper::callbackBeacon(const mrpt_msgs::ObservationRangeBeacon& _msg
     
     //add observations from other robots and publish own
     if (run_multi_robot) {
-        publishObservations(nullptr, &_msg);
         for (int i = 0; i < obs_batch && !obs_queue.empty(); i++) {
             boost::mutex::scoped_lock(obs_mutex);
             CObservation::Ptr mr_obs = msgToObservation(obs_queue.front(), _msg.header.stamp); //use same timestamp as odometry
-            if (!mr_obs) break;
+            if (mr_obs == nullptr) break;
             sf->insert(mr_obs);
             obs_queue.pop();
         }
@@ -335,6 +335,10 @@ void PFslamWrapper::callbackBeacon(const mrpt_msgs::ObservationRangeBeacon& _msg
 
     publishMapPose();
     run3Dwindow();
+    publishTF();
+    
+    if (run_multi_robot)
+        publishObservations(nullptr, &_msg);
   }
 }
 
@@ -611,7 +615,7 @@ void PFslamWrapper::publishTF()
   // We want to send a transform that is good up until a
   // tolerance time so that odom can be used
 
-  ros::Duration transform_tolerance_(0.5);
+  ros::Duration transform_tolerance_(2);
   ros::Time transform_expiration = (stamp + transform_tolerance_);
   tf::StampedTransform tmp_tf_stamped(latest_tf_.inverse(), transform_expiration, global_frame_id, odom_frame_id);
   tf_broadcaster_.sendTransform(tmp_tf_stamped);

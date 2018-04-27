@@ -134,7 +134,7 @@ public:
   * @param _msg ObservationWithTransform message
   * @param _stamp timestamp of odometry
   */
-  CObservation::Ptr msgToObservation(const mrpt_rbpf_slam::ObservationWithTransform& _msg, ros::Time _stamp);
+  CObservation::Ptr msgToObservation(const mrpt_rbpf_slam::ObservationWithTransform& _msg, const ros::Time& _stamp);
   
   /**
   * @brief publish observations to other robots
@@ -193,7 +193,7 @@ private:
   bool rawlog_play_;         ///< true if rawlog file exists
   bool run_multi_robot;      ///< multi-robot mode
   int robots_count;          ///< number of robots
-  int obs_batch = 5;         ///< number of observation from other robots to add to current action
+  int obs_batch = 1;         ///< number of observation from other robots to add to current action
 
   std::string rawlog_filename;  ///< name of rawlog file
   std::string ini_filename;     ///< name of ini file
