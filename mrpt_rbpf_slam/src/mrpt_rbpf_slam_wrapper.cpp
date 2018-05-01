@@ -177,7 +177,7 @@ void PFslamWrapper::laserCallback(const sensor_msgs::LaserScan& _msg)
   else
   {
     mrpt::poses::CPose3D pose = laser_poses_[_msg.header.frame_id];
-    mrpt_bridge::convert(_msg, laser_poses_[_msg.header.frame_id], *laser);
+    mrpt_bridge::convert(_msg, pose, *laser);
 
     sf = CSensoryFrame::Create();
     CObservationOdometry::Ptr odometry;
@@ -188,13 +188,16 @@ void PFslamWrapper::laserCallback(const sensor_msgs::LaserScan& _msg)
     
     //add observations from other robots and publish own
     if (run_multi_robot) {
+        ros::Time prev_stamp;
+        mrpt_bridge::convert(prev_stamp, timeLastUpdate_);
         for (int i = 0; i < obs_batch && !obs_queue.empty(); i++) {
             boost::mutex::scoped_lock(obs_mutex);
-            CObservation::Ptr mr_obs = msgToObservation(obs_queue.front(), _msg.header.stamp); //use same timestamp as odometry
+            CObservation::Ptr mr_obs = msgToObservation(obs_queue.front(), prev_stamp); //use same timestamp as odometry
             if (mr_obs == nullptr) break;
             sf->insert(mr_obs);
             obs_queue.pop();
         }
+        publishObservations(&_msg, nullptr, prev_stamp);
     }
     
     observation(sf, odometry);
@@ -207,9 +210,6 @@ void PFslamWrapper::laserCallback(const sensor_msgs::LaserScan& _msg)
     publishMapPose();
     run3Dwindow();
     publishTF();
-    
-    if (run_multi_robot)
-        publishObservations(&_msg, nullptr);
   }
 }
 
@@ -268,13 +268,12 @@ CObservation::Ptr PFslamWrapper::msgToObservation(const mrpt_rbpf_slam::Observat
 }
 
 
-void PFslamWrapper::publishObservations(const sensor_msgs::LaserScan* scan, const mrpt_msgs::ObservationRangeBeacon* beacon) {
+void PFslamWrapper::publishObservations(const sensor_msgs::LaserScan* scan, const mrpt_msgs::ObservationRangeBeacon* beacon, const ros::Time& _stamp) {
   tf::StampedTransform transform;
   try
   {
-    ros::Time stamp = scan ? scan->header.stamp : beacon->header.stamp;
     std::string frame = scan ? scan->header.frame_id : beacon->header.frame_id;
-    listenerTF_.lookupTransform(global_frame_id, frame, stamp, transform); //use same timestamp as sensor message
+    listenerTF_.lookupTransform(global_frame_id, frame, _stamp, transform); //use same timestamp as sensor message
     mrpt_rbpf_slam::ObservationWithTransform msg;
     tf::transformStampedTFToMsg(transform, msg.transform);
     if (scan) msg.scan = *scan;
@@ -316,13 +315,16 @@ void PFslamWrapper::callbackBeacon(const mrpt_msgs::ObservationRangeBeacon& _msg
     
     //add observations from other robots and publish own
     if (run_multi_robot) {
+        ros::Time prev_stamp;
+        mrpt_bridge::convert(prev_stamp, timeLastUpdate_);
         for (int i = 0; i < obs_batch && !obs_queue.empty(); i++) {
             boost::mutex::scoped_lock(obs_mutex);
-            CObservation::Ptr mr_obs = msgToObservation(obs_queue.front(), _msg.header.stamp); //use same timestamp as odometry
+            CObservation::Ptr mr_obs = msgToObservation(obs_queue.front(), prev_stamp); //use same timestamp as odometry
             if (mr_obs == nullptr) break;
             sf->insert(mr_obs);
             obs_queue.pop();
         }
+        publishObservations(nullptr, &_msg, prev_stamp);
     }
     
     observation(sf, odometry);
@@ -336,9 +338,6 @@ void PFslamWrapper::callbackBeacon(const mrpt_msgs::ObservationRangeBeacon& _msg
     publishMapPose();
     run3Dwindow();
     publishTF();
-    
-    if (run_multi_robot)
-        publishObservations(nullptr, &_msg);
   }
 }
 
@@ -615,7 +614,7 @@ void PFslamWrapper::publishTF()
   // We want to send a transform that is good up until a
   // tolerance time so that odom can be used
 
-  ros::Duration transform_tolerance_(2);
+  ros::Duration transform_tolerance_(0.5);
   ros::Time transform_expiration = (stamp + transform_tolerance_);
   tf::StampedTransform tmp_tf_stamped(latest_tf_.inverse(), transform_expiration, global_frame_id, odom_frame_id);
   tf_broadcaster_.sendTransform(tmp_tf_stamped);

@@ -13,7 +13,7 @@
 ICPslamWrapper::ICPslamWrapper()
 {
   rawlog_play_ = false;
-  stamp = ros::Time(0);
+  stamp = ros::Time::now();
   // Default parameters for 3D window
   SHOW_PROGRESS_3D_REAL_TIME = false;
   SHOW_PROGRESS_3D_REAL_TIME_DELAY_MS = 0;  // this parameter is not used
@@ -56,7 +56,6 @@ void ICPslamWrapper::read_iniFile(std::string ini_filename)
 
   mapBuilder.ICP_options.loadFromConfigFile(iniFile, "MappingApplication");
   mapBuilder.ICP_params.loadFromConfigFile(iniFile, "ICP");
-  mapBuilder.initialize();
 
 #if MRPT_VERSION < 0x150
   mapBuilder.options.verbose = true;
@@ -113,6 +112,27 @@ void ICPslamWrapper::get_param()
 
   n_.param("trajectory_publish_rate", trajectory_publish_rate, 5.0);
   ROS_INFO("trajectory_publish_rate: %f", trajectory_publish_rate);
+  
+  n_.param<bool>("run_multi_robot", run_multi_robot, false);
+  ROS_INFO("run_multi_robot: %d", run_multi_robot);
+  
+  n_.param<std::string>("robots_source", robots_source, "observations");
+  ROS_INFO("robots_source: %s", robots_source.c_str());
+  
+  n_.param<std::string>("base_ns", base_ns, "robot");
+  ROS_INFO("base_ns: %s", base_ns.c_str());
+  
+  n_.param<int>("robots_count", robots_count, 2);
+  ROS_INFO("robots_count: %d", robots_count);
+  
+  n_.param<int>("init_x", init_x, 0);
+  ROS_INFO("init_x: %d", init_x);
+  
+  n_.param<int>("init_y", init_y, 0);
+  ROS_INFO("init_y: %d", init_y);
+  
+  n_.param<int>("init_phi", init_phi, 0);
+  ROS_INFO("init_phi: %d", init_phi);
 }
 void ICPslamWrapper::init3Dwindow()
 {
@@ -271,6 +291,10 @@ void ICPslamWrapper::init()
     ROS_WARN_STREAM("PLAY FROM RAWLOG FILE: " << rawlog_filename.c_str());
     rawlog_play_ = true;
   }
+  
+  //init map builder with init pose
+  mrpt::poses::CPosePDFGaussian init_pose(mrpt::poses::CPose2D(init_x, init_y, init_phi));
+  mapBuilder.initialize(mrpt::maps::CSimpleMap(), &init_pose);
 
   /// Create publishers///
   // publish grid map
@@ -310,6 +334,23 @@ void ICPslamWrapper::init()
                 << "\n";
     }
   }
+  
+  if (run_multi_robot) {
+      //advertize own observations
+      std::string own_obs = ros::names::resolve(robots_source);
+      pub_observations = n_.advertise<mrpt_icp_slam_2d::ObservationWithTransform>(own_obs, 1, true);
+      
+      //subscribe to others observations
+      robotsSubs.resize(robots_count);
+      for (int i = 0; i < robots_count; i++)
+      {
+        std::string other_obs = ros::names::resolve("/" + base_ns + std::to_string(i) + "/" + robots_source);
+        if (other_obs != own_obs)
+        {
+          robotsSubs[i] = n_.subscribe(other_obs, 1000, &ICPslamWrapper::multirobotCallback, this);
+        }
+      }
+  }
 
   init3Dwindow();
 }
@@ -328,22 +369,104 @@ void ICPslamWrapper::laserCallback(const sensor_msgs::LaserScan &_msg)
     updateSensorPose(_msg.header.frame_id);
   }
   else
-  {
+  {      
     mrpt::poses::CPose3D pose = laser_poses_[_msg.header.frame_id];
-    mrpt_bridge::convert(_msg, laser_poses_[_msg.header.frame_id], *laser);
-    // CObservation::Ptr obs = CObservation::Ptr(laser);
+    mrpt_bridge::convert(_msg, pose, *laser);
+
     observation = CObservation::Ptr(laser);
-    stamp = ros::Time(0);
+    
+    ros::Time prev_stamp = stamp;
+    stamp = _msg.header.stamp;
+    
     tictac.Tic();
     mapBuilder.processObservation(observation);
     t_exec = tictac.Tac();
-    ROS_INFO("Map building executed in %.03fms", 1000.0f * t_exec);
+    ROS_DEBUG("Map building executed in %.03fms", 1000.0f * t_exec);
 
     run3Dwindow();
     publishTF();
     publishMapPose();
+    
+    //add observations from other robots
+    if (run_multi_robot) {
+        for (int i = 0; i < obs_batch && !obs_queue.empty(); i++) {
+            boost::mutex::scoped_lock(obs_mutex);
+            CObservation::Ptr mr_obs = msgToObservation(obs_queue.front(), prev_stamp); //timestamp does not matter
+            if (mr_obs == nullptr) break;
+            mapBuilder.processObservation(mr_obs);
+            obs_queue.pop();
+        }
+        publishObservations(_msg, prev_stamp);
+    }
   }
 }
+
+void ICPslamWrapper::multirobotCallback(const mrpt_icp_slam_2d::ObservationWithTransform& _msg)
+{
+  boost::mutex::scoped_lock(obs_mutex);
+  obs_queue.push(_msg);
+
+  ROS_DEBUG("Multi-robot observation added");
+}
+
+CObservation::Ptr ICPslamWrapper::msgToObservation(const mrpt_icp_slam_2d::ObservationWithTransform& _msg, const ros::Time& _stamp) {
+#if MRPT_VERSION >= 0x130
+  using namespace mrpt::maps;
+  using namespace mrpt::obs;
+#else
+  using namespace mrpt::slam;
+#endif
+  //transform to pose
+  geometry_msgs::PoseStamped global_pose;
+  global_pose.header.stamp = _stamp;
+  global_pose.header.frame_id = global_frame_id;
+  global_pose.pose.orientation = _msg.transform.transform.rotation;
+  global_pose.pose.position.x = _msg.transform.transform.translation.x;
+  global_pose.pose.position.y = _msg.transform.transform.translation.y;
+  global_pose.pose.position.z = _msg.transform.transform.translation.z;
+  //transform to robot base frame
+  geometry_msgs::PoseStamped pose;
+  try
+  {
+    listenerTF_.transformPose(base_frame_id, _stamp, global_pose, global_frame_id, pose);
+  }
+  catch (tf::TransformException ex)
+  {
+    ROS_WARN("%s", ex.what());
+    return nullptr;
+  }
+  
+  //convert tf transform to mrpt pose
+  mrpt::poses::CPose3D sensor_pose;
+  mrpt_bridge::convert(pose.pose, sensor_pose);
+      
+  CObservation2DRangeScan::Ptr laser = CObservation2DRangeScan::Create();
+  
+  mrpt_bridge::convert(_msg.scan, sensor_pose, *laser);
+  CObservation::Ptr obs = CObservation::Ptr(laser);
+  
+  return obs;
+}
+
+
+void ICPslamWrapper::publishObservations(const sensor_msgs::LaserScan& scan, const ros::Time& _stamp) {
+  tf::StampedTransform transform;
+  try
+  {
+    listenerTF_.lookupTransform(global_frame_id, scan.header.frame_id, _stamp, transform); //use same timestamp as sensor message
+    mrpt_icp_slam_2d::ObservationWithTransform msg;
+    tf::transformStampedTFToMsg(transform, msg.transform);
+    msg.scan = scan;
+    
+    pub_observations.publish(msg);
+  }
+  catch (tf::TransformException ex)
+  {
+    ROS_WARN("%s", ex.what());
+  }
+
+}
+
 void ICPslamWrapper::publishMapPose()
 {
   // get currently builded map
@@ -363,7 +486,7 @@ void ICPslamWrapper::publishMapPose()
   {
     sensor_msgs::PointCloud _msg;
     std_msgs::Header header;
-    header.stamp = ros::Time(0);
+    header.stamp = stamp;
     header.frame_id = global_frame_id;
     // if we have new map for current sensor update it
     mrpt_bridge::point_cloud::mrpt2ros(*metric_map_->m_pointsMaps[0], header, _msg);
@@ -472,7 +595,7 @@ bool ICPslamWrapper::rawlogPlay()
         {
           sensor_msgs::PointCloud _msg;
           std_msgs::Header header;
-          header.stamp = ros::Time(0);
+          header.stamp = ros::Time::now();
           header.frame_id = global_frame_id;
           // if we have new map for current sensor update it
           mrpt_bridge::point_cloud::mrpt2ros(*metric_map_->m_pointsMaps[0], header, _msg);
@@ -511,7 +634,6 @@ void ICPslamWrapper::publishTF()
   mrpt::poses::CPose3D robotPoseTF;
   mapBuilder.getCurrentPoseEstimation()->getMean(robotPoseTF);
 
-  stamp = ros::Time(0);
   tf::Stamped<tf::Pose> odom_to_map;
   tf::Transform tmp_tf;
   mrpt_bridge::convert(robotPoseTF, tmp_tf);
@@ -531,8 +653,12 @@ void ICPslamWrapper::publishTF()
   tf::Transform latest_tf_ =
       tf::Transform(tf::Quaternion(odom_to_map.getRotation()), tf::Point(odom_to_map.getOrigin()));
 
-  tf::StampedTransform tmp_tf_stamped(latest_tf_.inverse(), stamp, global_frame_id, odom_frame_id);
+  // We want to send a transform that is good up until a
+  // tolerance time so that odom can be used
 
+  ros::Duration transform_tolerance_(0.5);
+  ros::Time transform_expiration = (stamp + transform_tolerance_);
+  tf::StampedTransform tmp_tf_stamped(latest_tf_.inverse(), transform_expiration, global_frame_id, odom_frame_id);
   tf_broadcaster_.sendTransform(tmp_tf_stamped);
 }
 
@@ -540,7 +666,7 @@ void ICPslamWrapper::updateTrajectoryTimerCallback(const ros::TimerEvent& event)
 {
     ROS_DEBUG("update trajectory");
     path.header.frame_id = global_frame_id;
-    path.header.stamp = ros::Time(0);
+    path.header.stamp = ros::Time::now();
     path.poses.push_back(pose);
 }
 

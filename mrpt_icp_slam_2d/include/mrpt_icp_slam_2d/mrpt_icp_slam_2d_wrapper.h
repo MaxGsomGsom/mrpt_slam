@@ -76,6 +76,11 @@ using namespace mrpt::obs;
 #include <mrpt/slam/CMultiMetricMap.h>
 #include <mrpt/slam/CRawlog.h>
 #endif
+
+#include <queue>
+#include <tf_conversions/tf_eigen.h>
+#include "mrpt_icp_slam_2d/ObservationWithTransform.h"
+
 using namespace mrpt;
 using namespace mrpt::slam;
 using namespace mrpt::opengl;
@@ -148,6 +153,36 @@ public:
    * @param _msg  the laser scan message
    */
   void laserCallback(const sensor_msgs::LaserScan &_msg);
+  
+  /**
+  * @brief callback function for the observations from other robots
+  *
+  * Given the laser scans or range only observation with odometry,
+  * create the pair of action and observation,
+  * implement one SLAM update,
+  * publish map and pose.
+  *
+  * @param _msg ObservationWithTransform message
+  */
+  void multirobotCallback(const mrpt_icp_slam_2d::ObservationWithTransform& _msg);
+  
+  /**
+  * @brief Convert ObservationWithTransform to CObservation
+  *
+  * @param _msg ObservationWithTransform message
+  * @param _stamp timestamp of odometry
+  */
+  CObservation::Ptr msgToObservation(const mrpt_icp_slam_2d::ObservationWithTransform& _msg, const ros::Time& _stamp);
+  
+  /**
+  * @brief publish observations to other robots
+  *
+  * @param scan observation
+  * @param beacon observation
+  * @param _frame_id frame of sensor
+  */
+  void publishObservations(const sensor_msgs::LaserScan& scan, const ros::Time& _stamp);
+  
   /**
     * @brief  publis tf tree
     *
@@ -182,12 +217,17 @@ protected:
   ros::NodeHandle n_;               ///< Node Handle
   double rawlog_play_delay;         ///< delay of replay from rawlog file
   bool rawlog_play_;                ///< true if rawlog file exists
+  bool run_multi_robot;             ///< multi-robot mode
+  int robots_count;                 ///< number of robots
+  int obs_batch = 1;                ///< number of observation from other robots to add to current action
+  int init_x, init_y, init_phi;     ///< init pose
 
   std::string rawlog_filename;  ///< name of rawlog file
   std::string ini_filename;     ///< name of ini file
   std::string global_frame_id;  ///< /map frame
   std::string odom_frame_id;    ///< /odom frame
   std::string base_frame_id;    ///< robot frame
+  std::string base_ns;          ///< constant part of namespace for multi-robot
   geometry_msgs::PoseStamped pose; ///< the robot pose
 
   ros::Publisher trajectory_pub_;  ///< trajectory publisher
@@ -202,13 +242,15 @@ protected:
   // Sensor source
   std::string sensor_source;                                 ///< 2D laser scans
   std::map<std::string, mrpt::poses::CPose3D> laser_poses_;  ///< laser scan poses with respect to the map
+  std::string robots_source;  ///< observations and transforms
 
   // Subscribers
   std::vector<ros::Subscriber> sensorSub_;  ///< list of sensors topics
+  std::vector<ros::Subscriber> robotsSubs;  ///< list of robots topics
 
   const CMultiMetricMap *metric_map_;  ///<receive map after iteration of SLAM to metric map
   // CPose3DPDF::Ptr curPDF;          ///<current robot pose
-  ros::Publisher pub_map_, pub_metadata_, pub_pose_, pub_point_cloud_;  ///<publishers for map and pose particles
+  ros::Publisher pub_map_, pub_metadata_, pub_pose_, pub_point_cloud_, pub_observations;  ///<publishers for map and pose particles
 
   tf::TransformListener listenerTF_;         ///<transform listener
   tf::TransformBroadcaster tf_broadcaster_;  ///<transform broadcaster
@@ -218,6 +260,9 @@ protected:
   CSensoryFrame::Ptr observations;
   CObservation::Ptr observation;
   mrpt::system::TTimeStamp timeLastUpdate_;  ///< last update of the pose and map
+  
+  std::queue<mrpt_icp_slam_2d::ObservationWithTransform> obs_queue;  ///< observations of other robots
+  boost::mutex obs_mutex;
 
   ros::Time stamp;  ///< timestamp for observations
 

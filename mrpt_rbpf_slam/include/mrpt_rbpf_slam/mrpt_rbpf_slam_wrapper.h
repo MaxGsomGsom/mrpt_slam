@@ -143,7 +143,7 @@ public:
   * @param beacon observation
   * @param _frame_id frame of sensor
   */
-  void publishObservations(const sensor_msgs::LaserScan* scan, const mrpt_msgs::ObservationRangeBeacon* beacon);
+  void publishObservations(const sensor_msgs::LaserScan* scan, const mrpt_msgs::ObservationRangeBeacon* beacon, const ros::Time& _stamp);
   
   /**
    * @brief wait for transfor between odometry frame and the robot frame
