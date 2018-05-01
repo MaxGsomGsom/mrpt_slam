@@ -294,25 +294,25 @@ findTFWithNeighbor(TNeighborAgentProps* neighbor) {
 	//neighbor_gridmap->saveMetricMapRepresentationToFile(this->getLoggerName() + "_other");
 	//this->m_gridmap_cached->saveMetricMapRepresentationToFile(this->getLoggerName() + "_self");
 
-	const CPosePDF::Ptr pdf_tmp = gridmap_aligner.AlignPDF(
+	/*const CPosePDF::Ptr pdf_tmp = gridmap_aligner.AlignPDF(
 			this->m_gridmap_cached.get(), neighbor_gridmap.get(),
 			init_estim,
-			&run_time, &results);
+			&run_time, &results);*/
 	this->logFmt(LVL_INFO, "Elapsed Time: %f", run_time);
 	CPosePDFSOG::Ptr pdf_out = CPosePDFSOG::Create();
-	pdf_out->copyFrom(*pdf_tmp);
+	pdf_out->copyFrom(init_estim/**pdf_tmp*/);
 
 	CPose2D pose_out; CMatrixDouble33 cov_out;
 	pdf_out->getMostLikelyCovarianceAndMean(cov_out, pose_out);
 
 	this->logFmt(LVL_INFO, "%s\n",
-			getGridMapAlignmentResultsAsString(*pdf_tmp, results).c_str());
+			getGridMapAlignmentResultsAsString(init_estim/**pdf_tmp*/, results).c_str());
 
 	// dismiss this?
-	if (results.goodness > 0.999 ||
+	/*if (results.goodness > 0.999 ||
 			isEssentiallyZero(pose_out)) {
 		return false;
-	}
+	}*/
 
 	//
 	//
@@ -476,6 +476,13 @@ void CGraphSlamEngine_MR<GRAPH_T>::initClass() {
 	using namespace mrpt::graphslam;
 	using namespace mrpt::utils;
 	using namespace std;
+    
+    this->m_gridmap_cached->setSize(
+                        /* min_x = */ -20.0f,
+                        /* float max_x = */ 20.0f,
+                        /* float min_y = */ -20.0f,
+                        /* float max_y = */ 20.0f,
+                        /* float resolution = */ 0.025f);
 
 	// initialization of topic namespace names
 	// TODO - put these into seperate method
