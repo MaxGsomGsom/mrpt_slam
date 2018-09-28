@@ -396,7 +396,12 @@ void PFslamWrapper::publishMapPose()
   poseArray.poses.resize(curPDF.particlesCount());
   for (size_t i = 0; i < curPDF.particlesCount(); i++)
   {
+#if MRPT_VERSION >= 0x199
+    mrpt::poses::CPose3D p(curPDF.getParticlePose(i));
+#else
     mrpt::poses::CPose3D p = curPDF.getParticlePose(i);
+#endif
+
     mrpt_bridge::convert(p, poseArray.poses[i]);
   }
 
@@ -563,7 +568,11 @@ bool PFslamWrapper::rawlogPlay()
         poseArray.poses.resize(curPDF.particlesCount());
         for (size_t i = 0; i < curPDF.particlesCount(); i++)
         {
+#if MRPT_VERSION >= 0x199
+          mrpt::poses::CPose3D p(curPDF.getParticlePose(i));
+#else
           mrpt::poses::CPose3D p = curPDF.getParticlePose(i);
+#endif
           mrpt_bridge::convert(p, poseArray.poses[i]);
         }
 

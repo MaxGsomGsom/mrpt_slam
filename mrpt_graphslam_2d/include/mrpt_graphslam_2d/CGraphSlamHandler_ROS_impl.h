@@ -215,7 +215,7 @@ void CGraphSlamHandler_ROS<GRAPH_T>::getROSParameters(std::string* str_out) {
 	(this->m_enable_visuals? "TRUE" : "FALSE")
 	<< endl;
   ss << "Logging verbosity Level   = " <<
-	COutputLogger::logging_levels_to_names[m_min_logging_level] << endl;;
+	COutputLogger::logging_levels_to_names()[m_min_logging_level] << endl;;
   ss << endl;
 
   *str_out = ss.str();
